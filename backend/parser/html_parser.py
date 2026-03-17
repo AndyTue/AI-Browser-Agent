@@ -2,6 +2,7 @@
 
 import re
 from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
 
 
 def parse_html(html: str, url: str) -> dict:
@@ -93,3 +94,23 @@ def chunk_text(text: str, url: str, chunk_size: int = 2000, overlap: int = 200) 
         start = max(start + 1, end - overlap)
 
     return chunks
+
+def extract_internal_links(html: str, base_url: str) -> list[str]:
+    """Extrae enlaces internos del mismo dominio."""
+    soup = BeautifulSoup(html, "lxml")
+    base_domain = urlparse(base_url).netloc
+    links = set()
+    
+    for a_tag in soup.find_all("a", href=True):
+        href = a_tag["href"]
+        full_url = urljoin(base_url, href)
+        
+        # Remover fragmentos (#) para evitar duplicados de la misma página
+        full_url = full_url.split('#')[0]
+        
+        # Validar que pertenezca al mismo dominio y use http/https
+        parsed_url = urlparse(full_url)
+        if parsed_url.scheme in ["http", "https"] and parsed_url.netloc == base_domain:
+            links.add(full_url)
+            
+    return list(links)

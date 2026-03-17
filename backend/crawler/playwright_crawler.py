@@ -37,7 +37,7 @@ async def crawl_url(url: str) -> str:
             )
             page = await context.new_page()
 
-            await page.goto(url, wait_until="networkidle", timeout=30000)
+            await page.goto(url, wait_until="networkidle", timeout=50000)
 
             # Wait a bit for any remaining JS rendering
             await page.wait_for_timeout(2000)

@@ -15,7 +15,7 @@ def process_url(url: str) -> str:
         response = httpx.post(
             f"{API_BASE_URL}/process",
             json={"url": url.strip()},
-            timeout=120.0,
+            timeout=600.0,
         )
 
         if response.status_code == 200:
@@ -25,6 +25,7 @@ def process_url(url: str) -> str:
             return (
                 f"✅ **Successfully processed!**\n\n"
                 f"📄 **Title:** {title}\n"
+                f"🌐 **Pages crawled:** {pages}\n"
                 f"🧩 **Chunks created:** {chunks}\n"
                 f"🔗 **URL:** {url}\n\n"
                 f"You can now ask questions about this page."
@@ -50,7 +51,7 @@ def chat(message: str, history: list) -> tuple:
         response = httpx.post(
             f"{API_BASE_URL}/chat",
             json={"question": message.strip()},
-            timeout=60.0,
+            timeout=800.0,
         )
 
         if response.status_code == 200:
