@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+gradio
+playwright
+beautifulsoup4
+lxml
+sentence-transformers
+faiss-cpu
+groq
+python-dotenv
+httpx
+numpy
