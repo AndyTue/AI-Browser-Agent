@@ -45,6 +45,15 @@ class ChatResponse(BaseModel):
 
 
 # --- Endpoints ---
+import asyncio
+import sys
+
+def run_pipeline_sync(url: str):
+    """Run the pipeline in a fresh asyncio loop (solves Windows ProactorEventLoop issues)."""
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    return asyncio.run(pipeline.process_url(url))
+
 @app.post("/process", response_model=ProcessResponse)
 async def process_url(request: ProcessRequest):
     """Process a URL: crawl, parse, chunk, embed, and store in FAISS."""
@@ -55,8 +64,8 @@ async def process_url(request: ProcessRequest):
         store.clear()
         memory.clear()
 
-        # Run the pipeline
-        result = await pipeline.process_url(request.url)
+        # Run pipeline in a dedicated thread to avoid Uvicorn event loop conflicts with Playwright
+        result = await asyncio.to_thread(run_pipeline_sync, request.url)
 
         current_url = request.url
 

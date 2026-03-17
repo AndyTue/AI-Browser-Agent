@@ -18,7 +18,7 @@ class GroqClient:
                 "GROQ_API_KEY not set. Create a .env file with your Groq API key."
             )
         self.client = Groq(api_key=api_key)
-        self.model = "llama3-8b-8192"
+        self.model = "llama-3.3-70b-versatile"
 
     def generate(self, context: str, history: str, question: str) -> str:
         """
