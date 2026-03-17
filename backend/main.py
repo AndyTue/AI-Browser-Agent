@@ -1,4 +1,4 @@
-"""FastAPI backend for the AI Browser Chatbot."""
+"""FastAPI backend for the AI Browser Agent."""
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -11,7 +11,7 @@ from backend.services.chat_memory import ChatMemory
 from backend.llm.groq_client import GroqClient
 
 # --- Initialize components ---
-app = FastAPI(title="AI Browser Chatbot", version="1.0.0")
+app = FastAPI(title="AI Browser Agent", version="1.0.0")
 
 embedder = Embedder()
 store = FAISSStore(dimension=embedder.dimension)
