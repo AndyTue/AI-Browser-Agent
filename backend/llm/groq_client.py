@@ -85,10 +85,9 @@ class GroqClient:
         return (
             "## Tool Use\n"
             "If you need to visit an internal page to find the answer, "
-            "output ONLY the following JSON block and nothing else:\n"
+            "you MUST output the following JSON block anywhere in your response:\n"
             '{"action": "scrape_url", "url": "<full URL>"}\n\n'
             "Rules:\n"
-            "- Output the JSON block alone, with no explanation before or after.\n"
             "- Only call scrape_url on URLs from the Available Internal Links list.\n"
             "- After receiving the page content, answer the user's question DIRECTLY and COMPLETELY.\n"
             "- The page content will contain the answer — extract and present it fully.\n"

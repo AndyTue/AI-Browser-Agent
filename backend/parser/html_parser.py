@@ -19,7 +19,19 @@ def parse_html(html: str, url: str) -> dict:
     soup = BeautifulSoup(html, "lxml")
 
     # Remove script and style elements
-    for element in soup(["script", "style", "noscript", "iframe", "nav", "footer", "header"]):
+    for element in soup(["script", "style", "noscript", "iframe", "nav", "footer", "header", "aside"]):
+        element.decompose()
+
+    # Aggressive removal by class/id to drop mega-menus and giant footers
+    for element in soup.find_all(
+        lambda tag: tag.has_attr('class') and any(
+            c.lower() in ['menu', 'megamenu', 'footer', 'header', 'sidebar', 'nav', 'navigation'] 
+            for c in tag['class']
+        ) or tag.has_attr('id') and any(
+            i.lower() in ['menu', 'megamenu', 'footer', 'header', 'sidebar', 'nav', 'navigation'] 
+            for i in [tag['id']]
+        )
+    ):
         element.decompose()
 
     # Extract title
@@ -27,11 +39,12 @@ def parse_html(html: str, url: str) -> dict:
     if soup.title and soup.title.string:
         title = soup.title.string.strip()
 
-    # Extract visible text
-    text = soup.get_text(separator=" ")
+    # Extract visible text using \n so table rows and lists don't mash together
+    text = soup.get_text(separator="\n")
 
-    # Normalize whitespace: collapse multiple spaces/newlines into single space
-    text = re.sub(r"\s+", " ", text).strip()
+    # Normalize whitespace: collapse horizontal spaces, and max 2 newlines
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s*\n+", "\n\n", text).strip()
 
     if not text:
         raise RuntimeError(f"No text content extracted from {url}")
@@ -43,7 +56,7 @@ def parse_html(html: str, url: str) -> dict:
     }
 
 
-def chunk_text(text: str, url: str, chunk_size: int = 3000, overlap: int = 300) -> list[dict]:
+def chunk_text(text: str, url: str, chunk_size: int = 800, overlap: int = 100) -> list[dict]:
     """
     Split text into overlapping chunks.
 

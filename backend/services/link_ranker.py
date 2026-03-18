@@ -48,4 +48,7 @@ def rank_links(
     scores = cosine_similarity(q_vec, link_vecs)
     top_indices = np.argsort(scores)[::-1][:top_k]
 
-    return [links[i] for i in top_indices]
+    return [
+        {**links[i], "score": float(scores[i])}
+        for i in top_indices
+    ]
