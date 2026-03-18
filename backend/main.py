@@ -22,6 +22,8 @@ memory = ChatMemory(max_exchanges=5)
 
 # Track the currently processed URL
 current_url: str | None = None
+current_summary: str | None = None
+current_links: list[dict] = []
 
 
 # --- Request/Response models ---
@@ -31,9 +33,10 @@ class ProcessRequest(BaseModel):
 
 class ProcessResponse(BaseModel):
     status: str
-    chunks_count: int
+    num_chunks: int
     title: str
-    summaries: list[dict[str, str]]
+    summary: str
+    internal_links: list[dict]
 
 
 class ChatRequest(BaseModel):
@@ -69,12 +72,15 @@ async def process_url(request: ProcessRequest):
         result = await asyncio.to_thread(run_pipeline_sync, request.url)
 
         current_url = request.url
+        current_summary = result["summary"]
+        current_links = result["internal_links"]
 
         return ProcessResponse(
             status=result["status"],
-            chunks_count=result["num_chunks"],
+            num_chunks=result["num_chunks"],
             title=result["title"],
-            summaries=result["summaries"]
+            summary=current_summary,
+            internal_links=current_links
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -84,10 +90,14 @@ async def process_url(request: ProcessRequest):
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 
+import json
+from backend.crawler.playwright_crawler import crawl_url
+from backend.parser.html_parser import parse_html
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Answer a question using retrieved context from the processed URL."""
-    global current_url
+    """Answer a question using Agentic RAG and Tool Calling."""
+    global current_url, current_summary, current_links
 
     if current_url is None or store.total_vectors == 0:
         raise HTTPException(
@@ -96,7 +106,7 @@ async def chat(request: ChatRequest):
         )
 
     try:
-        # Retrieve relevant chunks
+        # Retrieve relevant chunks from the root page
         results = retriever.retrieve(request.question, k=5)
 
         # Build context from retrieved chunks
@@ -106,16 +116,83 @@ async def chat(request: ChatRequest):
             context_parts.append(f"[Source: {url}]\n{r['text']}")
         context = "\n\n---\n\n".join(context_parts)
 
+        # Build list of links as string
+        links_str = "\n".join([f"- {link['text']}: {link['url']}" for link in current_links])
+
         # Get conversation history
         history = memory.get_history()
 
-        # Generate answer
-        answer = llm.generate(context=context, history=history, question=request.question)
+        system_prompt = (
+            "You are an AI Assistant that helps users find information on a website.\n"
+            f"Root Page URL: {current_url}\n"
+            f"Root Page Summary: {current_summary}\n\n"
+            "Available Internal Links:\n"
+            f"{links_str}\n\n"
+            "Instructions:\n"
+            "1. Answer the user's question using the retrieved context below.\n"
+            "2. If you need more information from the internal links, use your available tools to fetch it.\n"
+            "3. IMPORTANT: When calling a tool, you must output ONLY the tool call. Do not add any conversational text, explanations, or acknowledgment before or after the tool call.\n"
+            "4. Always cite the Source URL when answering.\n"
+            "5. Do not hallucinate."
+        )
 
-        # Save to memory
-        memory.add(request.question, answer)
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        if history:
+            messages.append({"role": "user", "content": f"Previous conversation history:\n{history}"})
 
-        return ChatResponse(answer=answer, source_url=current_url)
+        user_content = f"Retrieved Root Page Context:\n{context}\n\nQuestion: {request.question}"
+        messages.append({"role": "user", "content": user_content})
+
+        tools = [llm.get_scrape_tool_schema()]
+        max_iterations = 5
+        iterations = 0
+
+        while iterations < max_iterations:
+            iterations += 1
+            response_msg = llm.generate(messages=messages, tools=tools)
+
+            if response_msg.tool_calls:
+                # Add the assistant's tool call message exactly as dict
+                # Some API clients need it dumped to dict
+                messages.append(response_msg.model_dump())
+
+                for tool_call in response_msg.tool_calls:
+                    if tool_call.function.name == "scrape_url":
+                        args = json.loads(tool_call.function.arguments)
+                        target_url = args.get("url")
+                        
+                        try:
+                            # Perform real-time scraping
+                            html = await crawl_url(target_url)
+                            parsed = parse_html(html, target_url)
+                            scraped_text = parsed["text"][:8000] # Limit size
+                            
+                            # Add tool response
+                            messages.append({
+                                "role": "tool",
+                                "name": "scrape_url",
+                                "tool_call_id": tool_call.id,
+                                "content": f"Successfully scraped {target_url}:\n\n{scraped_text}"
+                            })
+                        except Exception as e:
+                            print(f"Failed to scrape tool url: {e}")
+                            messages.append({
+                                "role": "tool",
+                                "name": "scrape_url",
+                                "tool_call_id": tool_call.id,
+                                "content": f"Failed to scrape {target_url}: {str(e)}"
+                            })
+            else:
+                # No tool calls, got final answer
+                answer = response_msg.content
+                memory.add(request.question, answer)
+                return ChatResponse(answer=answer, source_url=current_url)
+
+        # Output fallback if loop maxes out
+        fallback_answer = "I needed too many steps to answer. Could you ask a more specific question?"
+        memory.add(request.question, fallback_answer)
+        return ChatResponse(answer=fallback_answer, source_url=current_url)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
