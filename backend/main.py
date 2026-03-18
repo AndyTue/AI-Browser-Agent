@@ -139,13 +139,16 @@ async def chat(request: ChatRequest):
             f"{links_str}\n\n"
             "## Instructions\n"
             "1. Read the Retrieved Context carefully.\n"
-            "2. IMPORTANT: If the answer is not explicitly stated in the context, "
-            "you MUST call scrape_url on the most relevant link above. "
-            "Never say 'I don't have enough information' — always try to find it first.\n"
-            "3. After scraping, answer using the new content.\n"
-            "4. Always cite the Source URL.\n\n"
+            "2. If the answer is not in the context, call scrape_url on the most relevant link. "
+            "NEVER say 'I don't have enough information' without trying at least one scrape.\n"
+            "3. After scraping, you WILL receive relevant chunks from that page. "
+            "Use them to answer completely and specifically.\n"
+            "4. NEVER say the content 'does not explicitly describe' something if you haven't "
+            "scraped the specific page first.\n"
+            "5. Always cite the Source URL.\n\n"
             + llm.get_tool_instructions()
         )
+
         messages = [{"role": "system", "content": system_prompt}]
 
         if history and history != "No previous conversation.":
@@ -171,7 +174,6 @@ async def chat(request: ChatRequest):
                 target_url = response.tool_call.arguments["url"]
                 print(f"[Iteration {iteration+1}] Agent scraping: {target_url}")
 
-                # Add the model's tool-call turn to history
                 messages.append({
                     "role": "assistant",
                     "content": response.content,
@@ -180,8 +182,9 @@ async def chat(request: ChatRequest):
                 try:
                     cached = page_cache.get(target_url)
                     if cached:
-                        scraped_text = cached[:8000]
-                        tool_result = f"[Cached] Content of {target_url}:\n\n{scraped_text}"
+                        # Si está en caché, igual hacemos retrieval semántico si ya fue indexado
+                        scraped_text = cached
+                        already_indexed = True
                     else:
                         def run_incremental_sync(u):
                             if sys.platform == "win32":
@@ -190,28 +193,55 @@ async def chat(request: ChatRequest):
                                 )
                             return asyncio.run(pipeline.process_incremental_url(u))
 
-                        full_text = await asyncio.to_thread(
+                        scraped_text = await asyncio.to_thread(
                             run_incremental_sync, target_url
                         )
-                        page_cache.set(target_url, full_text)
-                        scraped_text = full_text[:8000]
+                        page_cache.set(target_url, scraped_text)
+                        already_indexed = False  # ya fue indexado en process_incremental_url
+
+                    # ✅ FIX PRINCIPAL: re-hacer retrieval semántico sobre el store actualizado
+                    # Ahora el store contiene los chunks de la nueva página scrapeada
+                    fresh_results = retriever.retrieve(request.question, k=6)
+                    
+                    # Priorizar chunks de la URL recién scrapeada
+                    target_chunks = [
+                        r for r in fresh_results if r["metadata"]["url"] == target_url
+                    ]
+                    other_chunks = [
+                        r for r in fresh_results if r["metadata"]["url"] != target_url
+                    ]
+                    # Poner primero los chunks del target URL
+                    ordered_results = target_chunks + other_chunks
+
+                    if ordered_results:
+                        fresh_context = "\n\n---\n\n".join([
+                            f"[Source: {r['metadata']['url']}]\n{r['text'][:800]}"
+                            for r in ordered_results
+                        ])
                         tool_result = (
-                            f"Content of {target_url}:\n\n{scraped_text}"
+                            f"Relevant content retrieved from {target_url}:\n\n"
+                            f"{fresh_context}"
+                        )
+                    else:
+                        # Fallback: usar texto crudo si el retrieval no devolvió nada
+                        tool_result = (
+                            f"Content of {target_url}:\n\n{scraped_text[:8000]}"
                         )
 
                 except Exception as e:
                     tool_result = f"Failed to scrape {target_url}: {str(e)}"
 
-                # Feed result back as a user turn (simple, no tool_call_id needed)
+                # ✅ FIX 2: Prompt post-tool más directivo
                 messages.append({
                     "role": "user",
                     "content": (
                         f"Here is the content you requested from {target_url}:\n\n"
                         f"{tool_result}\n\n"
-                        "Now answer the original question using this information."
+                        "IMPORTANT: Answer the original question NOW using the content above. "
+                        "The answer IS present in the content — do not say you lack information. "
+                        "Be specific and complete."
                     ),
                 })
-
             else:
                 # Final answer
                 answer = response.content

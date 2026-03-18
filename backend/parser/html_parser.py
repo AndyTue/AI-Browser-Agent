@@ -43,7 +43,7 @@ def parse_html(html: str, url: str) -> dict:
     }
 
 
-def chunk_text(text: str, url: str, chunk_size: int = 2000, overlap: int = 200) -> list[dict]:
+def chunk_text(text: str, url: str, chunk_size: int = 3000, overlap: int = 300) -> list[dict]:
     """
     Split text into overlapping chunks.
 

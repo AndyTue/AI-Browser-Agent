@@ -90,8 +90,10 @@ class GroqClient:
             "Rules:\n"
             "- Output the JSON block alone, with no explanation before or after.\n"
             "- Only call scrape_url on URLs from the Available Internal Links list.\n"
-            "- After receiving the page content, answer the user's question directly.\n"
+            "- After receiving the page content, answer the user's question DIRECTLY and COMPLETELY.\n"
+            "- The page content will contain the answer — extract and present it fully.\n"
             "- Do NOT output the JSON block if you already have enough context.\n"
+            "- Do NOT apologize or say information is unavailable after receiving scraped content.\n"
         )
 
     def summarize(self, text: str) -> str:
