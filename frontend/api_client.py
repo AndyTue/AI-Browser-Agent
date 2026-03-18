@@ -12,19 +12,28 @@ def process_url(url: str) -> str:
         response = httpx.post(
             f"{API_BASE_URL}/process",
             json={"url": url.strip()},
-            timeout=600.0,
+            timeout=800.0,
         )
 
         if response.status_code == 200:
             data = response.json()
             title = data.get("title", "Unknown")
+            pages = data.get("pages_crawled", 1)
             chunks = data.get("chunks_count", 0)
+            summaries = data.get("summaries", [])
+            
+            # Format main page and subpage summaries
+            summaries_md = "### Summaries\n"
+            for s in summaries:
+                summaries_md += f"- **[{s.get('title', 'Unknown')}]({s.get('url', '')})**: {s.get('summary', 'No summary')}\n"
+
             return (
                 f"**Successfully processed!**\n\n"
-                f"**Title:** {title}\n"
+                f"**Main Title:** {title}\n"
                 f"**Pages crawled:** {pages}\n"
                 f"**Chunks created:** {chunks}\n"
                 f"**URL:** {url}\n\n"
+                f"{summaries_md}\n"
                 f"You can now ask questions about this page."
             )
         else:
@@ -56,7 +65,7 @@ def chat(message: str, history: list) -> tuple:
             answer = data.get("answer", "No response received.")
             source = data.get("source_url", "")
             if source:
-                answer += f"\n\n📎 *Source: {source}*"
+                answer += f"\n\n *Source: {source}*"
         else:
             detail = response.json().get("detail", "Unknown error")
             answer = f"Error: {detail}"

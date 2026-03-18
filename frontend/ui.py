@@ -26,7 +26,7 @@ custom_theme = gr.themes.Soft(
 
 def build_ui() -> gr.Blocks:
     """Build and return the gradio interface"""
-    with gr.Blocks(title="AI Browser Agent", theme=custom_theme, css=custom_css) as demo:
+    with gr.Blocks(title="AI Browser Agent") as demo:
         
         # Header
         gr.HTML(

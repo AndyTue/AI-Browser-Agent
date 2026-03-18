@@ -63,3 +63,35 @@ class GroqClient:
             return response.choices[0].message.content
         except Exception as e:
             raise RuntimeError(f"LLM generation failed: {str(e)}")
+
+    def summarize(self, text: str) -> str:
+        """
+        Generate a concise summary of the provided text.
+
+        Args:
+            text: The text to summarize (e.g., scraped from a web page).
+
+        Returns:
+            A summary string of the web.
+        """
+        system_prompt = (
+            "You are a helpful AI assistant. Your task is to provide a very brief, "
+            "concise summary (4 to 6 sentences maximum) of the provided text."
+        )
+
+        user_prompt = f"Please summarize the following text:\n\n{text}"
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0,
+                max_tokens=200,
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Warning: Summarization failed: {str(e)}")
+            return "Summary unavailable."

@@ -7,20 +7,23 @@ from backend.parser.html_parser import parse_html, chunk_text, extract_internal_
 from backend.embedding.embedder import Embedder
 from backend.vectorstore.faiss_store import FAISSStore
 
+from backend.llm.groq_client import GroqClient
 
 class Pipeline:
     """Orchestrates crawl → parse → chunk → embed → store."""
 
-    def __init__(self, embedder: Embedder, store: FAISSStore):
+    def __init__(self, embedder: Embedder, store: FAISSStore, llm: GroqClient = None):
         """
         Initialize the pipeline.
 
         Args:
             embedder: Embedder instance for generating vectors.
             store: FAISSStore instance for storing vectors.
+            llm: Optional LLM client, used to generate summaries.
         """
         self.embedder = embedder
         self.store = store
+        self.llm = llm
 
     async def process_url(self, start_url: str, max_pages: int = 15) -> dict:
         """
@@ -30,6 +33,7 @@ class Pipeline:
         urls_to_visit = [start_url]
         all_chunks = []
         main_title = "Unknown"
+        page_summaries = []
 
         # Step 1 & 2 & 3: Crawl, Parse and Chunk loop
         while urls_to_visit and len(visited_urls) < max_pages:
@@ -53,6 +57,17 @@ class Pipeline:
                 parsed = parse_html(html, current_url)
                 chunks = chunk_text(parsed["text"], current_url)
                 all_chunks.extend(chunks)
+                
+                # Resume Page
+                summary = "Summary not available"
+                if self.llm and parsed.get("text"):
+                    summary = self.llm.summarize(parsed["text"][:8000]) # Avoid token limits
+
+                page_summaries.append({
+                    "url": current_url,
+                    "title": parsed.get("title", "Unknown"),
+                    "summary": summary
+                })
 
                 # Guardar el título de la página principal
                 if current_url == start_url:
@@ -83,4 +98,5 @@ class Pipeline:
             "num_chunks": len(all_chunks),
             "pages_crawled": len(visited_urls),
             "title": main_title,
+            "summaries": page_summaries
         }

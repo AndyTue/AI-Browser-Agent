@@ -15,10 +15,10 @@ app = FastAPI(title="AI Browser Agent", version="1.0.0")
 
 embedder = Embedder()
 store = FAISSStore(dimension=embedder.dimension)
-pipeline = Pipeline(embedder=embedder, store=store)
+llm = GroqClient()
+pipeline = Pipeline(embedder=embedder, store=store, llm=llm)
 retriever = Retriever(embedder=embedder, store=store)
 memory = ChatMemory(max_exchanges=5)
-llm = GroqClient()
 
 # Track the currently processed URL
 current_url: str | None = None
@@ -33,6 +33,7 @@ class ProcessResponse(BaseModel):
     status: str
     chunks_count: int
     title: str
+    summaries: list[dict[str, str]]
 
 
 class ChatRequest(BaseModel):
@@ -73,6 +74,7 @@ async def process_url(request: ProcessRequest):
             status=result["status"],
             chunks_count=result["num_chunks"],
             title=result["title"],
+            summaries=result["summaries"]
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
