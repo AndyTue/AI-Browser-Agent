@@ -74,3 +74,38 @@ class Pipeline:
             "summary": summary,
             "internal_links": internal_links
         }
+        
+    async def process_incremental_url(self, url: str) -> str:
+        """
+        Process a sub-URL and APPEND its vectors to the existing store.
+        Returns the parsed text so the LLM can use it immediately.
+        """
+        try:
+            # 1. Scrape HTML
+            html = await crawl_url(url)
+            
+            # 2. Parse clean text
+            parsed = parse_html(html, url)
+            text = parsed["text"]
+            
+            # 3. Create chunks
+            chunks = chunk_text(text, url)
+            
+            if chunks:
+                # 4. Generate embeddings
+                chunk_texts = [chunk["text"] for chunk in chunks]
+                vectors = self.embedder.embed(chunk_texts)
+
+                # 5. Build metadata
+                metadata_list = [
+                    {"url": chunk["url"], "chunk_id": chunk["chunk_id"]}
+                    for chunk in chunks
+                ]
+
+                # 6. Store in FAISS (Notice we DO NOT call self.store.clear() here)
+                self.store.add(vectors, chunk_texts, metadata_list)
+            
+            return text
+
+        except Exception as e:
+            raise RuntimeError(f"Incremental processing failed for {url}: {str(e)}")

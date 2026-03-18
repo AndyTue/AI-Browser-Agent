@@ -9,6 +9,7 @@ from backend.services.pipeline import Pipeline
 from backend.services.retriever import Retriever
 from backend.services.chat_memory import ChatMemory
 from backend.llm.groq_client import GroqClient
+from backend.services.cache_manager import PageCache
 
 # --- Initialize components ---
 app = FastAPI(title="AI Browser Agent", version="1.0.0")
@@ -19,6 +20,7 @@ llm = GroqClient()
 pipeline = Pipeline(embedder=embedder, store=store, llm=llm)
 retriever = Retriever(embedder=embedder, store=store)
 memory = ChatMemory(max_exchanges=5)
+page_cache = PageCache()
 
 # Track the currently processed URL
 current_url: str | None = None
@@ -61,14 +63,15 @@ def run_pipeline_sync(url: str):
 @app.post("/process", response_model=ProcessResponse)
 async def process_url(request: ProcessRequest):
     """Process a URL: crawl, parse, chunk, embed, and store in FAISS."""
-    global current_url
+    global current_url, current_summary, current_links
 
     try:
         # Clear previous state
         store.clear()
         memory.clear()
+        page_cache.clear() # Limpiamos la caché para la nueva sesión
 
-        # Run pipeline in a dedicated thread to avoid Uvicorn event loop conflicts with Playwright
+        # Run pipeline
         result = await asyncio.to_thread(run_pipeline_sync, request.url)
 
         current_url = request.url
@@ -123,17 +126,15 @@ async def chat(request: ChatRequest):
         history = memory.get_history()
 
         system_prompt = (
-            "You are an AI Assistant that helps users find information on a website.\n"
+            "You are an AI Research Assistant exploring a website.\n"
             f"Root Page URL: {current_url}\n"
             f"Root Page Summary: {current_summary}\n\n"
-            "Available Internal Links:\n"
+            "Available Internal Links to explore:\n"
             f"{links_str}\n\n"
             "Instructions:\n"
-            "1. Answer the user's question using the retrieved context below.\n"
-            "2. If you need more information from the internal links, use the 'scrape_url' tool to fetch it.\n"
-            "3. Always cite the Source URL when answering.\n"
-            "4. Do not hallucinate.\n\n"
-            "CRITICAL: Do not output raw <function> or XML tags in your response. Use the native JSON tool calling format."
+            "1. Answer the user's question using the retrieved context.\n"
+            "2. If the current context is not enough, you MUST use the 'scrape_url' tool to visit one of the Available Internal Links to find the answer.\n"
+            "3. Always cite the Source URL when providing facts."
         )
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -163,17 +164,35 @@ async def chat(request: ChatRequest):
                         target_url = args.get("url")
                         
                         try:
-                            # Perform real-time scraping
-                            html = await crawl_url(target_url)
-                            parsed = parse_html(html, target_url)
-                            scraped_text = parsed["text"][:8000] # Limit size
+                            # 1. Verificar si la URL ya está en Caché
+                            cached_text = page_cache.get(target_url)
+                            
+                            if cached_text:
+                                scraped_text = cached_text[:8000]
+                                tool_response_content = f"Retrieved from cache:\n\n{scraped_text}"
+                            else:
+                                # 2. Si no está en caché, hacemos RAG Incremental
+                                print(f"Agent exploring new URL: {target_url}")
+                                
+                                def run_incremental_sync(u):
+                                    if sys.platform == "win32":
+                                        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+                                    return asyncio.run(pipeline.process_incremental_url(u))
+                                
+                                full_text = await asyncio.to_thread(run_incremental_sync, target_url)
+                                
+                                # Guardar en caché para futuras consultas
+                                page_cache.set(target_url, full_text)
+                                
+                                scraped_text = full_text[:8000] # Limitar tamaño para el prompt actual
+                                tool_response_content = f"Successfully scraped and learned {target_url}:\n\n{scraped_text}"
                             
                             # Add tool response
                             messages.append({
                                 "role": "tool",
                                 "name": "scrape_url",
                                 "tool_call_id": tool_call.id,
-                                "content": f"Successfully scraped {target_url}:\n\n{scraped_text}"
+                                "content": tool_response_content
                             })
                         except Exception as e:
                             print(f"Failed to scrape tool url: {e}")
