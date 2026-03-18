@@ -21,25 +21,17 @@ class GroqClient:
         self.model = "llama-3.3-70b-versatile"
 
     def generate(self, messages: list[dict], tools: list[dict] = None):
-        """
-        Generate a response using the provided messages and tools (for Tool Calling).
-
-        Args:
-            messages: List of conversation messages.
-            tools: Optional list of tools to use.
-
-        Returns:
-            The LLM's response message object.
-        """
         try:
             kwargs = {
                 "model": self.model,
                 "messages": messages,
-                "temperature": 0,
+                "temperature": 0, # Mantener en 0 es vital para tool calling
                 "max_tokens": 1024,
             }
             if tools:
                 kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+                kwargs["parallel_tool_calls"] = False # Crítico para Llama 3 en Groq
                 
             response = self.client.chat.completions.create(**kwargs)
             return response.choices[0].message

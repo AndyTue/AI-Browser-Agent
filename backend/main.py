@@ -130,10 +130,10 @@ async def chat(request: ChatRequest):
             f"{links_str}\n\n"
             "Instructions:\n"
             "1. Answer the user's question using the retrieved context below.\n"
-            "2. If you need more information from the internal links, use your available tools to fetch it.\n"
-            "3. IMPORTANT: When calling a tool, you must output ONLY the tool call. Do not add any conversational text, explanations, or acknowledgment before or after the tool call.\n"
-            "4. Always cite the Source URL when answering.\n"
-            "5. Do not hallucinate."
+            "2. If you need more information from the internal links, use the 'scrape_url' tool to fetch it.\n"
+            "3. Always cite the Source URL when answering.\n"
+            "4. Do not hallucinate.\n\n"
+            "CRITICAL: Do not output raw <function> or XML tags in your response. Use the native JSON tool calling format."
         )
 
         messages = [{"role": "system", "content": system_prompt}]
@@ -154,8 +154,8 @@ async def chat(request: ChatRequest):
 
             if response_msg.tool_calls:
                 # Add the assistant's tool call message exactly as dict
-                # Some API clients need it dumped to dict
-                messages.append(response_msg.model_dump())
+                # Exclude None values to prevent Groq API 400 errors on the next iteration
+                messages.append(response_msg.model_dump(exclude_none=True))
 
                 for tool_call in response_msg.tool_calls:
                     if tool_call.function.name == "scrape_url":
