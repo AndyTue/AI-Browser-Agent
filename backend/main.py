@@ -10,6 +10,7 @@ from backend.services.retriever import Retriever
 from backend.services.chat_memory import ChatMemory
 from backend.llm.groq_client import GroqClient
 from backend.services.cache_manager import PageCache
+from backend.services.link_ranker import rank_links
 
 # --- Initialize components ---
 app = FastAPI(title="AI Browser Agent", version="1.0.0")
@@ -99,7 +100,7 @@ from backend.parser.html_parser import parse_html
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """Answer a question using Agentic RAG and Tool Calling."""
+    """Answer a question using Agentic RAG with manual JSON tool calling."""
     global current_url, current_summary, current_links
 
     if current_url is None or store.total_vectors == 0:
@@ -109,109 +110,117 @@ async def chat(request: ChatRequest):
         )
 
     try:
-        # Retrieve relevant chunks from the root page
         results = retriever.retrieve(request.question, k=5)
-
-        # Build context from retrieved chunks
-        context_parts = []
-        for r in results:
-            url = r["metadata"]["url"]
-            context_parts.append(f"[Source: {url}]\n{r['text']}")
+        context_parts = [
+            f"[Source: {r['metadata']['url']}]\n{r['text'][:600]}"  # cap per chunk
+            for r in results
+        ]
         context = "\n\n---\n\n".join(context_parts)
-
-        # Build list of links as string
-        links_str = "\n".join([f"- {link['text']}: {link['url']}" for link in current_links])
-
-        # Get conversation history
+        links_str = "\n".join(
+            [f"- {l['text']}: {l['url']}" for l in current_links[:20]]
+        )
         history = memory.get_history()
+
+        ranked_links = rank_links(
+            question=request.question,
+            links=current_links,
+            embedder=embedder,
+            top_k=5,           # Only best 5 links — saves tokens, improves focus
+        )
+        links_str = "\n".join(
+            [f"- {l['text']}: {l['url']}" for l in ranked_links]
+        )
 
         system_prompt = (
             "You are an AI Research Assistant exploring a website.\n"
             f"Root Page URL: {current_url}\n"
             f"Root Page Summary: {current_summary}\n\n"
-            "Available Internal Links to explore:\n"
+            "## Most Relevant Internal Links for this question:\n"
             f"{links_str}\n\n"
-            "Instructions:\n"
-            "1. Answer the user's question using the retrieved context.\n"
-            "2. If the current context is not enough, you MUST use the 'scrape_url' tool to visit one of the Available Internal Links to find the answer.\n"
-            "3. Always cite the Source URL when providing facts."
+            "## Instructions\n"
+            "1. Read the Retrieved Context carefully.\n"
+            "2. IMPORTANT: If the answer is not explicitly stated in the context, "
+            "you MUST call scrape_url on the most relevant link above. "
+            "Never say 'I don't have enough information' — always try to find it first.\n"
+            "3. After scraping, answer using the new content.\n"
+            "4. Always cite the Source URL.\n\n"
+            + llm.get_tool_instructions()
         )
-
         messages = [{"role": "system", "content": system_prompt}]
-        
-        if history:
-            messages.append({"role": "user", "content": f"Previous conversation history:\n{history}"})
 
-        user_content = f"Retrieved Root Page Context:\n{context}\n\nQuestion: {request.question}"
-        messages.append({"role": "user", "content": user_content})
+        if history and history != "No previous conversation.":
+            messages.append({
+                "role": "user",
+                "content": f"Previous conversation:\n{history}",
+            })
 
-        tools = [llm.get_scrape_tool_schema()]
+        messages.append({
+            "role": "user",
+            "content": (
+                f"Retrieved Context:\n{context}\n\n"
+                f"Question: {request.question}"
+            ),
+        })
+
         max_iterations = 5
-        iterations = 0
+        for iteration in range(max_iterations):
 
-        while iterations < max_iterations:
-            iterations += 1
-            response_msg = llm.generate(messages=messages, tools=tools)
+            response = llm.generate(messages=messages)
 
-            if response_msg.tool_calls:
-                # Add the assistant's tool call message exactly as dict
-                # Exclude None values to prevent Groq API 400 errors on the next iteration
-                messages.append(response_msg.model_dump(exclude_none=True))
+            if response.wants_tool:
+                target_url = response.tool_call.arguments["url"]
+                print(f"[Iteration {iteration+1}] Agent scraping: {target_url}")
 
-                for tool_call in response_msg.tool_calls:
-                    if tool_call.function.name == "scrape_url":
-                        args = json.loads(tool_call.function.arguments)
-                        target_url = args.get("url")
-                        
-                        try:
-                            # 1. Verificar si la URL ya está en Caché
-                            cached_text = page_cache.get(target_url)
-                            
-                            if cached_text:
-                                scraped_text = cached_text[:8000]
-                                tool_response_content = f"Retrieved from cache:\n\n{scraped_text}"
-                            else:
-                                # 2. Si no está en caché, hacemos RAG Incremental
-                                print(f"Agent exploring new URL: {target_url}")
-                                
-                                def run_incremental_sync(u):
-                                    if sys.platform == "win32":
-                                        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-                                    return asyncio.run(pipeline.process_incremental_url(u))
-                                
-                                full_text = await asyncio.to_thread(run_incremental_sync, target_url)
-                                
-                                # Guardar en caché para futuras consultas
-                                page_cache.set(target_url, full_text)
-                                
-                                scraped_text = full_text[:8000] # Limitar tamaño para el prompt actual
-                                tool_response_content = f"Successfully scraped and learned {target_url}:\n\n{scraped_text}"
-                            
-                            # Add tool response
-                            messages.append({
-                                "role": "tool",
-                                "name": "scrape_url",
-                                "tool_call_id": tool_call.id,
-                                "content": tool_response_content
-                            })
-                        except Exception as e:
-                            print(f"Failed to scrape tool url: {e}")
-                            messages.append({
-                                "role": "tool",
-                                "name": "scrape_url",
-                                "tool_call_id": tool_call.id,
-                                "content": f"Failed to scrape {target_url}: {str(e)}"
-                            })
+                # Add the model's tool-call turn to history
+                messages.append({
+                    "role": "assistant",
+                    "content": response.content,
+                })
+
+                try:
+                    cached = page_cache.get(target_url)
+                    if cached:
+                        scraped_text = cached[:8000]
+                        tool_result = f"[Cached] Content of {target_url}:\n\n{scraped_text}"
+                    else:
+                        def run_incremental_sync(u):
+                            if sys.platform == "win32":
+                                asyncio.set_event_loop_policy(
+                                    asyncio.WindowsProactorEventLoopPolicy()
+                                )
+                            return asyncio.run(pipeline.process_incremental_url(u))
+
+                        full_text = await asyncio.to_thread(
+                            run_incremental_sync, target_url
+                        )
+                        page_cache.set(target_url, full_text)
+                        scraped_text = full_text[:8000]
+                        tool_result = (
+                            f"Content of {target_url}:\n\n{scraped_text}"
+                        )
+
+                except Exception as e:
+                    tool_result = f"Failed to scrape {target_url}: {str(e)}"
+
+                # Feed result back as a user turn (simple, no tool_call_id needed)
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"Here is the content you requested from {target_url}:\n\n"
+                        f"{tool_result}\n\n"
+                        "Now answer the original question using this information."
+                    ),
+                })
+
             else:
-                # No tool calls, got final answer
-                answer = response_msg.content
+                # Final answer
+                answer = response.content
                 memory.add(request.question, answer)
                 return ChatResponse(answer=answer, source_url=current_url)
 
-        # Output fallback if loop maxes out
-        fallback_answer = "I needed too many steps to answer. Could you ask a more specific question?"
-        memory.add(request.question, fallback_answer)
-        return ChatResponse(answer=fallback_answer, source_url=current_url)
+        fallback = "I needed too many steps to find the answer. Please ask a more specific question."
+        memory.add(request.question, fallback)
+        return ChatResponse(answer=fallback, source_url=current_url)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")
