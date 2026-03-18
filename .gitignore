@@ -1,2 +1,4 @@
 .env
-__pycache__
+# Ignorar carpetas __pycache__ de Python
+**/__pycache__/
+*.py[cod]
