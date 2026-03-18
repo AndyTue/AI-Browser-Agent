@@ -20,49 +20,51 @@ class GroqClient:
         self.client = Groq(api_key=api_key)
         self.model = "llama-3.3-70b-versatile"
 
-    def generate(self, context: str, history: str, question: str) -> str:
+    def generate(self, messages: list[dict], tools: list[dict] = None):
         """
-        Generate a response using retrieved context, chat history, and the question.
+        Generate a response using the provided messages and tools (for Tool Calling).
 
         Args:
-            context: Retrieved text chunks with URLs.
-            history: Formatted conversation history.
-            question: The user's current question.
+            messages: List of conversation messages.
+            tools: Optional list of tools to use.
 
         Returns:
-            The LLM's response string.
+            The LLM's response message object.
         """
-        system_prompt = (
-            "You are a helpful AI assistant that answers questions based ONLY on the "
-            "provided context from a web page. Follow these rules strictly:\n"
-            "1. Use ONLY the information from the provided context to answer.\n"
-            "2. Always cite the source URL in your answer.\n"
-            "3. Do NOT make up or hallucinate any information.\n"
-            "4. If the answer is not found in the context, say: "
-            "\"I don't have enough information from the provided page to answer that question.\"\n"
-            "5. Be concise and accurate."
-        )
-
-        user_prompt = (
-            f"Context from web page:\n{context}\n\n"
-            f"Conversation history:\n{history}\n\n"
-            f"Question: {question}\n\n"
-            "Answer based ONLY on the context above. Cite the source URL."
-        )
-
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.3,
-                max_tokens=1024,
-            )
-            return response.choices[0].message.content
+            kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0,
+                "max_tokens": 1024,
+            }
+            if tools:
+                kwargs["tools"] = tools
+                
+            response = self.client.chat.completions.create(**kwargs)
+            return response.choices[0].message
         except Exception as e:
             raise RuntimeError(f"LLM generation failed: {str(e)}")
+
+    def get_scrape_tool_schema(self) -> dict:
+        """Return the schema for the scrape_url tool."""
+        return {
+            "type": "function",
+            "function": {
+                "name": "scrape_url",
+                "description": "Navigates to an internal URL of the website to read its content and find answers.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "description": "The full internal URL to scrape."
+                        }
+                    },
+                    "required": ["url"]
+                }
+            }
+        }
 
     def summarize(self, text: str) -> str:
         """

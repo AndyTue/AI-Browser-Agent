@@ -95,11 +95,13 @@ def chunk_text(text: str, url: str, chunk_size: int = 2000, overlap: int = 200) 
 
     return chunks
 
-def extract_internal_links(html: str, base_url: str) -> list[str]:
-    """Extrae enlaces internos del mismo dominio."""
+def extract_internal_links(html: str, base_url: str) -> list[dict]:
+    """Extrae enlaces internos del mismo dominio junto con su texto de anclaje."""
     soup = BeautifulSoup(html, "lxml")
     base_domain = urlparse(base_url).netloc
-    links = set()
+    
+    # Usamos un dict para evitar URLs duplicadas y mantener su primer texto de anclaje
+    links_dict = {}
     
     for a_tag in soup.find_all("a", href=True):
         href = a_tag["href"]
@@ -111,6 +113,9 @@ def extract_internal_links(html: str, base_url: str) -> list[str]:
         # Validar que pertenezca al mismo dominio y use http/https
         parsed_url = urlparse(full_url)
         if parsed_url.scheme in ["http", "https"] and parsed_url.netloc == base_domain:
-            links.add(full_url)
+            if full_url not in links_dict:
+                text = a_tag.get_text(strip=True)
+                if text:  # Ignorar enlaces sin texto visible
+                    links_dict[full_url] = text
             
-    return list(links)
+    return [{"url": url, "text": text} for url, text in links_dict.items()]

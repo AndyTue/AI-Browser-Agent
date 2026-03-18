@@ -18,22 +18,23 @@ def process_url(url: str) -> str:
         if response.status_code == 200:
             data = response.json()
             title = data.get("title", "Unknown")
-            pages = data.get("pages_crawled", 1)
-            chunks = data.get("chunks_count", 0)
-            summaries = data.get("summaries", [])
+            chunks = data.get("num_chunks", 0)
+            summary = data.get("summary", "No summary")
+            internal_links = data.get("internal_links", [])
             
-            # Format main page and subpage summaries
-            summaries_md = "### Summaries\n"
-            for s in summaries:
-                summaries_md += f"- **[{s.get('title', 'Unknown')}]({s.get('url', '')})**: {s.get('summary', 'No summary')}\n"
+            links_md = "### Internal Links Found\n"
+            for link in internal_links[:10]:
+                links_md += f"- [{link.get('text', 'Link')}]({link.get('url', '')})\n"
+            if len(internal_links) > 10:
+                links_md += f"- ... and {len(internal_links)-10} more links.\n"
 
             return (
                 f"**Successfully processed!**\n\n"
                 f"**Main Title:** {title}\n"
-                f"**Pages crawled:** {pages}\n"
                 f"**Chunks created:** {chunks}\n"
                 f"**URL:** {url}\n\n"
-                f"{summaries_md}\n"
+                f"**Summary:**\n{summary}\n\n"
+                f"{links_md}\n"
                 f"You can now ask questions about this page."
             )
         else:
