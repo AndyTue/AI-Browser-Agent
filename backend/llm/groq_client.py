@@ -116,6 +116,35 @@ class GroqClient:
             print(f"Warning: Summarization failed: {str(e)}")
             return "Summary unavailable."
 
+    def truncate_context(self, context: str) -> str:
+        """
+        Truncate a context string to MAX_CONTEXT_CHARS, cutting at the
+        last sentence boundary ('. ') before the limit so the LLM never
+        receives an incomplete sentence.
+        """
+        if len(context) <= self.MAX_CONTEXT_CHARS:
+            return context
+
+        truncated = context[: self.MAX_CONTEXT_CHARS]
+        last_period = truncated.rfind(". ")
+        if last_period > 0:
+            return truncated[: last_period + 1]  # include the period
+        return truncated  # no sentence boundary found — hard cut
+
+    def extract_tool_call_summary(self, content: str) -> str:
+        """
+        Compress a verbose assistant response that contains a tool-call
+        JSON block into a compact string for the message history.
+
+        Returns something like:
+            '[Tool call]: {"action": "scrape_url", "url": "..."}'
+        Falls back to the first 300 chars if no JSON block is found.
+        """
+        match = self._ACTION_RE.search(content)
+        if match:
+            return f"[Tool call]: {match.group()}"
+        return content[:300]
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------

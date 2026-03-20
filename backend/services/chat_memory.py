@@ -48,6 +48,31 @@ class ChatMemory:
 
         return "\n".join(lines)
 
+    def get_history_summary(self, max_chars: int = 1200) -> str:
+        """
+        Get a compact conversation history suitable for LLM context.
+
+        Each exchange is truncated individually, and the total output
+        is capped at *max_chars* to limit token usage.
+
+        Returns:
+            Compact formatted string, or 'No previous conversation.'
+        """
+        if not self.exchanges:
+            return "No previous conversation."
+
+        lines = []
+        for ex in self.exchanges:
+            q = ex["user"][:120]
+            a = ex["assistant"][:200]
+            lines.append(f"Q: {q}{'...' if len(ex['user']) > 120 else ''} "
+                         f"A: {a}{'...' if len(ex['assistant']) > 200 else ''}")
+
+        summary = "\n".join(lines)
+        if len(summary) > max_chars:
+            summary = summary[:max_chars].rsplit("\n", 1)[0]
+        return summary
+
     def clear(self) -> None:
         """Clear all conversation history."""
         self.exchanges = []

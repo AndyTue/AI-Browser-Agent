@@ -12,6 +12,11 @@ from backend.llm.groq_client import GroqClient
 from backend.services.cache_manager import PageCache
 from backend.services.link_ranker import rank_links
 
+# --- Retrieval constants ---
+INITIAL_RETRIEVAL_K = 8      # chunks on first retrieval (before any scrape)
+POST_SCRAPE_RETRIEVAL_K = 12  # chunks after a scrape adds more content
+PROACTIVE_SCRAPE_THRESHOLD = 0.60
+
 # --- Initialize components ---
 app = FastAPI(title="AI Browser Agent", version="1.0.0")
 
@@ -20,7 +25,7 @@ store = FAISSStore(dimension=embedder.dimension)
 llm = GroqClient()
 pipeline = Pipeline(embedder=embedder, store=store, llm=llm)
 retriever = Retriever(embedder=embedder, store=store)
-memory = ChatMemory(max_exchanges=5)
+memory = ChatMemory(max_exchanges=3)  # reduced from 5 to cap history tokens
 page_cache = PageCache()
 
 # Track the currently processed URL
@@ -70,7 +75,7 @@ async def process_url(request: ProcessRequest):
         # Clear previous state
         store.clear()
         memory.clear()
-        page_cache.clear() # Limpiamos la caché para la nueva sesión
+        page_cache.clear()
 
         # Run pipeline
         result = await asyncio.to_thread(run_pipeline_sync, request.url)
@@ -98,6 +103,23 @@ import json
 from backend.crawler.playwright_crawler import crawl_url
 from backend.parser.html_parser import parse_html
 
+
+def _chunk_id(r: dict) -> str:
+    """Build a unique identifier for a retrieval chunk."""
+    return f"{r['metadata']['url']}:{r['metadata']['chunk_id']}"
+
+
+def _filter_new_chunks(results: list[dict], seen: set[str]) -> list[dict]:
+    """Return only chunks not yet seen, and register the new ones."""
+    new = []
+    for r in results:
+        cid = _chunk_id(r)
+        if cid not in seen:
+            seen.add(cid)
+            new.append(r)
+    return new
+
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """Answer a question using Agentic RAG with manual JSON tool calling."""
@@ -110,31 +132,21 @@ async def chat(request: ChatRequest):
         )
 
     try:
-        results = retriever.retrieve(request.question, k=25)
-        context_parts = [
-            f"[Source: {r['metadata']['url']}]\n{r['text']}"
-            for r in results
-        ]
-        context = "\n\n---\n\n".join(context_parts)
-        links_str = "\n".join(
-            [f"- {l['text']}: {l['url']}" for l in current_links[:20]]
-        )
-        history = memory.get_history()
-
-        PROACTIVE_SCRAPE_THRESHOLD = 0.60
-
+        # ── Step 1: Rank links ────────────────────────────────────────
         ranked_links = rank_links(
             question=request.question,
             links=current_links,
             embedder=embedder,
-            top_k=5,           # Only best 5 links — saves tokens, improves focus
+            top_k=2,
         )
 
+        # ── Step 2: Proactive scrape if score ≥ threshold ─────────────
+        did_proactive_scrape = False
         top_link = ranked_links[0] if ranked_links else None
 
         if top_link and top_link.get("score", 0) >= PROACTIVE_SCRAPE_THRESHOLD:
             target_url = top_link["url"]
-            if target_url != current_url:  # no re-scrape root
+            if target_url != current_url:
                 print(f"[Proactive scrape] score={top_link['score']:.3f} → {target_url}")
                 try:
                     cached = page_cache.get(target_url)
@@ -149,27 +161,37 @@ async def chat(request: ChatRequest):
                         await asyncio.to_thread(run_incremental_sync, target_url)
                         cached_text = page_cache.get(target_url) or ""
                         page_cache.set(target_url, cached_text)
+                    did_proactive_scrape = True
                 except Exception as e:
                     print(f"[Proactive scrape] Failed: {e}")
 
-        results = retriever.retrieve(request.question, k=25)
+        # ── Step 3: Single retrieval (tiered k) ──────────────────────
+        retrieval_k = POST_SCRAPE_RETRIEVAL_K if did_proactive_scrape else INITIAL_RETRIEVAL_K
+        results = retriever.retrieve(request.question, k=retrieval_k)
+
+        # Deduplication set — persists across all iterations
+        seen_chunk_ids: set[str] = set()
+        results = _filter_new_chunks(results, seen_chunk_ids)
+
         context_parts = [
             f"[Source: {r['metadata']['url']}]\n{r['text']}"
             for r in results
         ]
-        context = "\n\n---\n\n".join(context_parts)
+        context = llm.truncate_context("\n\n---\n\n".join(context_parts))
 
+        # ── Step 4: Build links string ────────────────────────────────
         links_str = "\n".join(
             [f"- {l['text']}: {l['url']}" for l in ranked_links]
         )
 
-
+        # ── Step 5: Build messages ────────────────────────────────────
+        history = memory.get_history_summary()
 
         system_prompt = (
             "You are an AI Research Assistant exploring a website.\n"
             f"Root Page URL: {current_url}\n"
             f"Root Page Summary: {current_summary}\n\n"
-            
+
             "## Source Priority & Mandatory Scraping\n"
             "1. If the user asks for a LIST of items (e.g. 'What are the AWS courses?' or 'list Microsoft courses'), "
             "the root page only contains a partial menu. You MUST output the JSON tool block for `scrape_url` on the specific category link "
@@ -180,11 +202,11 @@ async def chat(request: ChatRequest):
 
             "## Response Scope Rules\n"
             "Match your answer strictly to what was asked:\n"
-            "- If asked for a LIST (e.g. 'what courses exist', 'list the X'), return ONLY a numbered or bulleted list. "
+            "- If asked for a LIST (e.g. 'what courses exist', 'list the X') return ONLY a numbered or bulleted list. "
             "Extract as many as you can find. No extra sections.\n"
             "- If asked for DETAILS about a specific item, return a structured answer with all available fields.\n"
             "- Never add sections the user did not ask for.\n\n"
-            
+
             "## Most Relevant Internal Links for this question:\n"
             f"{links_str}\n\n"
             "## Instructions\n"
@@ -212,7 +234,8 @@ async def chat(request: ChatRequest):
         })
 
         last_scraped_url = current_url
-        
+
+        # ── Step 6: Agent loop ────────────────────────────────────────
         max_iterations = 5
         for iteration in range(max_iterations):
 
@@ -223,16 +246,16 @@ async def chat(request: ChatRequest):
                 last_scraped_url = target_url
                 print(f"[Iteration {iteration+1}] Agent scraping: {target_url}")
 
+                # --- Compact assistant message (Problem 3) ---
                 messages.append({
                     "role": "assistant",
-                    "content": response.content,
+                    "content": llm.extract_tool_call_summary(response.content),
                 })
 
                 try:
                     cached = page_cache.get(target_url)
                     if cached:
                         scraped_text = cached
-                        already_indexed = True
                     else:
                         def run_incremental_sync(u):
                             if sys.platform == "win32":
@@ -245,52 +268,66 @@ async def chat(request: ChatRequest):
                             run_incremental_sync, target_url
                         )
                         page_cache.set(target_url, scraped_text)
-                        already_indexed = False  # ya fue indexado en process_incremental_url
 
-                    fresh_results = retriever.retrieve(request.question, k=25)
-                    
-                    # Priorizar chunks de la URL recién scrapeada
+                    # --- Deduplicated, tiered retrieval (Problem 4) ---
+                    fresh_results = retriever.retrieve(
+                        request.question, k=POST_SCRAPE_RETRIEVAL_K
+                    )
+
+                    # Prioritize chunks from the target URL
                     target_chunks = [
-                        r for r in fresh_results if r["metadata"]["url"] == target_url
+                        r for r in fresh_results
+                        if r["metadata"]["url"] == target_url
                     ]
                     other_chunks = [
-                        r for r in fresh_results if r["metadata"]["url"] != target_url
+                        r for r in fresh_results
+                        if r["metadata"]["url"] != target_url
                     ]
-                    # Poner primero los chunks del target URL
                     ordered_results = target_chunks + other_chunks
 
-                    if ordered_results:
+                    # Remove already-seen chunks
+                    new_chunks = _filter_new_chunks(ordered_results, seen_chunk_ids)
+
+                    if new_chunks:
                         fresh_context = "\n\n---\n\n".join([
                             f"[Source: {r['metadata']['url']}]\n{r['text']}"
-                            for r in ordered_results
+                            for r in new_chunks
                         ])
-                        tool_result = (
-                            f"=== SEMANTICALLY RELEVANT CHUNKS ===\n\n"
+                        tool_result = llm.truncate_context(
+                            f"=== NEW CHUNKS from {target_url} ===\n\n"
                             f"{fresh_context}"
                         )
                     else:
                         tool_result = (
-                            f"No immediate relevant semantic chunks found for {target_url}."
+                            f"No new relevant chunks found for {target_url}."
                         )
 
                 except Exception as e:
                     tool_result = f"Failed to scrape {target_url}: {str(e)}"
 
+                # --- Compact tool result message (Problem 4) ---
                 messages.append({
                     "role": "user",
                     "content": (
-                    f"Here are the most relevant chunks extracted from {target_url}:\n\n"
-                    f"{tool_result}\n\n"
-                    "Using ONLY the content above, answer the original question.\n"
-                    "STRICT RULES:\n"
-                    "- If asked for a list: return ONLY the list items, nothing else.\n"
-                    "- If asked for details: extract every available field (duration, prerequisites, "
-                    "price, modules, audience, certification). Search the relevant chunks carefully.\n"
-                    "- NEVER write 'not specified in the provided content' — if you cannot find a field, "
-                    "simply omit that field from your response entirely.\n"
-                    "- Be specific and complete. Do not add fields the user did not ask about."
+                        f"Chunks from {target_url}:\n\n"
+                        f"{tool_result}\n\n"
+                        "Answer the original question using the chunks above. "
+                        "Omit fields you cannot find; never say 'not specified'."
                     ),
                 })
+
+                # --- Trim system prompt links after tool call (Problem 7) ---
+                sys_content = messages[0]["content"]
+                links_header = "## Most Relevant Internal Links for this question:\n"
+                instr_header = "## Instructions\n"
+                if links_header in sys_content and instr_header in sys_content:
+                    before = sys_content.split(links_header)[0]
+                    after = sys_content.split(instr_header, 1)[1]
+                    messages[0]["content"] = (
+                        before
+                        + f"Most relevant link already scraped: {target_url}\n\n"
+                        + "## Instructions\n" + after
+                    )
 
             else:
                 # Final answer
