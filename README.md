@@ -295,7 +295,7 @@ This project is open source and available under the [MIT License](LICENSE).
 
 <div align="center">
 
-**Built with ❤️ using Python, FastAPI, and LLaMA 3.3**
+**Built with ❤️ by [Andrés Turriza](https://github.com/AndyTue)**
 
 <sub>If you found this project useful, consider giving it a ⭐</sub>
 
