@@ -79,6 +79,129 @@ graph LR
 
 ---
 
+## 🧩 Component Map
+
+> How the backend modules depend on each other.
+
+```mermaid
+graph TD
+    subgraph API["🚀 FastAPI Layer"]
+        MAIN["main.py"]
+    end
+
+    subgraph SERVICES["⚙️ Services"]
+        PIPE["pipeline.py"]
+        RET["retriever.py"]
+        RANK["link_ranker.py"]
+        MEM["chat_memory.py"]
+        CACHE["cache_manager.py"]
+    end
+
+    subgraph CORE["🔩 Core Modules"]
+        CRAWL["playwright_crawler.py"]
+        PARSE["html_parser.py"]
+        EMBED["embedder.py"]
+        STORE["faiss_store.py"]
+        LLM["groq_client.py"]
+    end
+
+    MAIN --> PIPE
+    MAIN --> RET
+    MAIN --> RANK
+    MAIN --> MEM
+    MAIN --> CACHE
+    MAIN --> LLM
+
+    PIPE --> CRAWL
+    PIPE --> PARSE
+    PIPE --> EMBED
+    PIPE --> STORE
+    PIPE --> LLM
+
+    RET --> EMBED
+    RET --> STORE
+    RANK --> EMBED
+
+    style API fill:#667eea,color:#fff,stroke:none
+    style SERVICES fill:#4f46e5,color:#fff,stroke:none
+    style CORE fill:#7c3aed,color:#fff,stroke:none
+```
+
+---
+
+## 📊 Text Processing Pipeline
+
+> How raw HTML becomes searchable vector chunks.
+
+```mermaid
+flowchart LR
+    A(["🌐 Raw HTML"]) --> B["Strip scripts,\nnavs, footers"]
+    B --> C["Extract visible\ntext with BeautifulSoup"]
+    C --> D["Normalize whitespace\n& collapse newlines"]
+    D --> E{"Split into\n800-char chunks"}
+    E --> F["Sentence-boundary\nalignment"]
+    F --> G["100-char overlap\nbetween chunks"]
+    G --> H(["📦 Chunk list"])
+    H --> I["all-MiniLM-L6-v2\nencodes each chunk"]
+    I --> J(["🔢 384-dim float32\nvectors"])
+    J --> K["FAISS IndexFlatL2\n.add(vectors)"]    
+    K --> L(["✅ Searchable\nVector Store"])
+
+    style A fill:#667eea,color:#fff,stroke:none
+    style L fill:#22c55e,color:#fff,stroke:none
+    style I fill:#8b5cf6,color:#fff,stroke:none
+```
+
+---
+
+## 🔄 Chat Session Lifecycle
+
+> Sequence of events from the user's first question to the final answer.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant UI as Gradio UI
+    participant API as FastAPI
+    participant Ranker as Link Ranker
+    participant FAISS as Vector Store
+    participant LLM as Groq LLM
+    participant Crawler as Playwright
+
+    User->>UI: Type question
+    UI->>API: POST /chat {question}
+    API->>Ranker: rank_links(question, links)
+    Ranker-->>API: top_link (score=0.72)
+
+    alt Proactive scrape (score >= 0.60)
+        API->>Crawler: crawl_url(top_link)
+        Crawler-->>API: HTML
+        API->>FAISS: Embed & append chunks
+    end
+
+    API->>FAISS: retrieve(question, k=12)
+    FAISS-->>API: top chunks
+
+    API->>LLM: generate(system + context + question)
+
+    alt LLM needs more info
+        LLM-->>API: {"action": "scrape_url", "url": "..."}
+        API->>Crawler: crawl_url(new_url)
+        Crawler-->>API: HTML
+        API->>FAISS: Embed & append new chunks
+        API->>FAISS: retrieve(question, k=12)
+        FAISS-->>API: fresh chunks
+        API->>LLM: generate(context + fresh chunks)
+    end
+
+    LLM-->>API: Final answer
+    API->>API: memory.add(question, answer)
+    API-->>UI: {answer, source_url}
+    UI-->>User: Display answer + source
+```
+
+---
+
 ## 📁 Project Structure
 
 ```
